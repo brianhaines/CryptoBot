@@ -11,3 +11,4 @@ RISK_PER_TRADE = '0.1'
 PRODUCTS = ['BTC-USD','ETH-USD','ETH-BTC']
 
 DBNAME = 'cryptoDB'
+SMA_Periods = {'short':50,'long':200}

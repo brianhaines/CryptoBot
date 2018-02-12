@@ -7,6 +7,7 @@ from settings import DBNAME
 from settings import DB_USER
 from settings import DB_PASSWORD
 from event import TickEvent
+from strategy import MovingAverageStrategy
 from decimal import Decimal, getcontext, ROUND_HALF_DOWN
 import pymysql.cursors
 import logging
@@ -53,7 +54,7 @@ class CryptoBot(gdax.WebsocketClient):
 	def on_close(self):
 		print('Closing time!')
 
-def trade(events):
+def trade(events,strategy):
 	latestPrices= {}
 	latestPrices['USD-USD'] = {"bid": Decimal("1.0"), "ask": Decimal("1.0"),"last":Decimal("1.0")}
 	arbitrages = {}
@@ -62,7 +63,6 @@ def trade(events):
 	for prod in PRODUCTS:
 		latestPrices[prod] = {"bid": None, "ask": None,"last":None}
 
-	print('User {0}, pw {1}, db {2}'.format(DB_USER,DB_PASSWORD,DBNAME))
 	conn = pymysql.connect(host='localhost',
 						user=DB_USER,
 						password=DB_PASSWORD, 
@@ -80,6 +80,9 @@ def trade(events):
 					if event.type == 'TICK':
 						latestPrices[event.product] = {'bid':event.bid,'ask':event.ask,'last':event.price}
 
+						# Send tick to strategy
+						strategy.calculateSignal(event)
+
 						with conn.cursor() as cursor:
 							sql = '''INSERT INTO ticks(sequence, product, time, price, bid, ask, spread, side, size) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)'''	
 							cursor.execute(sql,(event.sequence, event.product, event.time, event.price, event.bid, event.ask, event.spread, event.side, event.size))
@@ -95,23 +98,19 @@ def trade(events):
 
 							with conn.cursor() as cursor:
 								sql = '''INSERT INTO arbitrage(product, time, arb_in, arb_out, arb_spread, arb_size_in, arb_size_out) VALUES(%s,%s,%s,%s,%s,%s,%s)'''	
-								cursor.execute(sql,(event.product, event.time, arbitrages[event.product]['in'], arbitrages[event.product]['out'],arbitrages[event.product]['spread'],'',''))
+								cursor.execute(sql,(event.product, event.time, round(arbitrages[event.product]['in'],9), 
+									round(arbitrages[event.product]['out'],9), round(arbitrages[event.product]['spread'],9),None,None))
 							conn.commit()
 							
-
-
-							print('The {0} arbitrage is {1} / {2}  Arb Spread: {3}'.format(event.product, 
-								round(arbitrages['ETH-BTC']['in'],8), 
-								round(arbitrages['ETH-BTC']['out'],8),
-								round(arbitrages['ETH-BTC']['spread'],8)
-								))
-						elif event.sequence % 25 == 0 or event.size > 1:
+						elif event.sequence % 25 == 0 or event.size > 2:
 							print('This is a {0} Tick: {1} and {2} / {3}'.format(
 								event.product,
 								latestPrices[event.product]['last'],
 								latestPrices[event.product]['bid'],
 								latestPrices[event.product]['ask']
 								))
+					elif event.type == 'SIGNAL':
+						print('This is a SIGNAL: {0} {1} params: {2}/{3}'.format(event.side,event.market,event.sig_params['short_sma'],event.sig_params['long_sma']))
 
 	except KeyboardInterrupt:
 		print('Closing Time')
@@ -131,8 +130,11 @@ if __name__ == '__main__':
 							key 		=	API_KEY,
 							passphrase	=	API_PASSPHRASE
 							)
+	
+	# The trading strategy
+	strategy = MovingAverageStrategy(PRODUCTS, events)
 
-	trade_thread = threading.Thread(target=trade, args=(events,))
+	trade_thread = threading.Thread(target=trade, args=(events, strategy))
 
 	streamingPrices.start()
 	trade_thread.start()
